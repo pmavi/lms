@@ -1,0 +1,264 @@
+image: node:14.16.0
+
+
+workflow:
+  rules:
+    - if: $CI_COMMIT_TAG
+      when: never
+    - when: always
+
+
+variables:
+  DEPLOY:
+    value: "test" # this would be the default value
+    description: "Is this a deployment (test, prod)?"
+  SERVER_VER:
+    value: ""
+    description: "Version of server to deploy (accepts tags, branches, and commits).  Leaving empty will use latest master"
+  CLIENT_VER:
+    value: "" # this would be the default value
+    description: "Version of client to deploy (accepts tags, branches, and commits).  Leaving empty will use latest master"
+
+
+# These operations run before every job
+before_script:
+  # Display some information about the runner setup
+  - uname -a
+  - npm -v
+  - node -v
+  - git status
+  - git log -1
+
+
+stages:
+  - tag
+  - env_prep
+  - test
+  - build
+  - deploy
+
+# Create the version tag
+generate_tag:
+  stage: tag
+  before_script:
+    - uname -a
+    - git status
+    - git log -1
+  script:
+    - cd $CI_PROJECT_DIR
+    - >
+      if [ `git tag -l --points-at HEAD | wc -l` -eq 0 ]; then
+        mkdir -p ~/.ssh && chmod 700 ~/.ssh
+        HOST_URL=`echo $CI_REPOSITORY_URL | sed -r 's/.+@([^/]+)\/.*/\1/'`
+        ssh-keyscan "$HOST_URL" >> ~/.ssh/known_hosts && chmod 644 ~/.ssh/known_hosts
+        eval $(ssh-agent -s)
+        ssh-add <(echo "$SSH_PRIVATE_KEY")
+        git describe --tag --abbrev=0
+        NEW_URL=`echo $CI_REPOSITORY_URL | sed -r 's/.+@([^/]+)\//git@\1:/'`
+        echo $NEW_URL
+        git remote set-url --push origin $NEW_URL
+        VERSION=`git describe --tag --abbrev=0`
+        echo $VERSION
+        MAJOR=`echo $VERSION | sed -e 's/\..*//' | sed -e 's/v//'`
+        MINOR=`echo $VERSION | sed -r 's/^v?([0-9]*?)\.//' | sed -r 's/\..*//'`
+        PATCH=`echo $VERSION | sed -e 's/.*\.//'`
+        PATCH=$((PATCH+1))
+        echo v$MAJOR.$MINOR.$PATCH
+        git tag v$MAJOR.$MINOR.$PATCH
+        git push origin v$MAJOR.$MINOR.$PATCH
+      else
+        echo "No need to tag version"
+      fi
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push"  && $TAG == "true" && $CI_COMMIT_BRANCH == "master"'
+      when: always
+    - when: never
+
+# Prepares build/test environment
+env_prep_server:
+  stage: env_prep
+  script:
+    # Install the node modules for server
+    - cd $CI_PROJECT_DIR
+    - git fetch --all
+    - if [ ! -z $SERVER_VER ]; then git checkout $SERVER_VER; fi
+    - npm ci
+  artifacts:
+    expire_in: 1 hr
+    paths:
+      - node_modules/
+
+# Prepares build/test environment
+env_prep_client:
+  stage: env_prep
+  before_script:
+    - BASE_URL=`echo $CI_REPOSITORY_URL | sed "s;\/*$CI_PROJECT_PATH.*;;"`
+    - REPO_URL="$BASE_URL/$CI_PROJECT_NAMESPACE/$REPO_DIR.git"
+    - rm -rf $REPO_DIR
+    - git clone $REPO_URL $REPO_DIR
+    - uname -a
+    - npm -v
+    - node -v
+    - git status
+    - git log -1
+    - cd $REPO_DIR
+    - git fetch --all
+    - if [ ! -z $CLIENT_VER ]; then git checkout $CLIENT_VER; fi
+    - git status
+    - git log -1
+  script:
+    # Install the node modules for client
+    - cd $CI_PROJECT_DIR
+    - npm run clean-all
+    - cd $CI_PROJECT_DIR/$REPO_DIR
+    - npm ci
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "web" && $REPO_DIR'
+      when: always
+    - when: never
+  artifacts:
+    expire_in: 1 hr
+    paths:
+      - $REPO_DIR/node_modules/
+
+# Checks the eslint validity of the code
+lint:
+  stage: test
+  script:
+    - cd $CI_PROJECT_DIR
+    - git fetch --all
+    - if [ ! -z $SERVER_VER ]; then git checkout $SERVER_VER; fi
+    - npm run lint-ci
+  dependencies:
+    - env_prep_server
+
+# Runs a build of the project
+build:
+  stage: build
+  before_script:
+    - >
+      if [[ ! -z $REPO_DIR ]] && [[ $CI_PIPELINE_SOURCE == "web" ]]; then
+        BASE_URL=`echo $CI_REPOSITORY_URL | sed "s;\/*$CI_PROJECT_PATH.*;;"`
+        REPO_URL="$BASE_URL/$CI_PROJECT_NAMESPACE/$REPO_DIR.git"
+        rm -rf $CI_PROJECT_DIR/../$REPO_DIR
+        git clone $REPO_URL $CI_PROJECT_DIR/../$REPO_DIR
+        mv $REPO_DIR/node_modules $CI_PROJECT_DIR/../$REPO_DIR
+        cd $CI_PROJECT_DIR/../$REPO_DIR
+        git fetch --all
+        if [ ! -z $CLIENT_VER ]; then git checkout $CLIENT_VER; fi
+        git status
+        git log -1
+      fi
+    - uname -a
+    - npm -v
+    - node -v
+    - cd $CI_PROJECT_DIR
+    - git status
+    - git log -1
+  script:
+    - cd $CI_PROJECT_DIR
+    - git fetch --all
+    - if [ ! -z $SERVER_VER ]; then git checkout $SERVER_VER; fi
+    - >
+      if [ ! -z $SERVER_VER ]; then
+        if [[ "$SERVER_VER" =~ ^v[0-9]*\.[0-9]*\.[0-9]*$ ]]; then
+            echo $SERVER_VER > server.ver
+        else
+            echo `git rev-parse --short HEAD` > server.ver
+        fi
+      else
+        echo `git describe --tag --abbrev=0` > server.ver
+      fi
+    - npm run clean-build
+    - >
+      if [[ ! -z $REPO_DIR ]] && [[ $CI_PIPELINE_SOURCE == "web" ]]; then
+        cd $CI_PROJECT_DIR/../$REPO_DIR
+        if [ ! -z $CLIENT_VER ]; then
+          if [[ "$CLIENT_VER" =~ ^v[0-9]*\.[0-9]*\.[0-9]*$ ]]; then
+              echo $CLIENT_VER > client.ver
+          else
+              echo `git rev-parse --short HEAD` > client.ver
+          fi
+        else
+          echo `git describe --tag --abbrev=0` > client.ver
+        fi
+        npm run build-deploy-${DEPLOY,,}
+        sed -i -r 's/\.\/(\w)/\/\1/g' build/index.html
+        cd $CI_PROJECT_DIR
+        cp -rf $CI_PROJECT_DIR/../$REPO_DIR/build src/startup
+      else
+        echo '' > client.ver
+      fi
+    # Build server
+    - strippedVersion=`echo ${SERVER_VER} | sed -e 's/v//'`
+    - >
+      if [[ "$strippedVersion" =~ ^[0-9]*\.[0-9]*\.[0-9]*$ ]]; then
+          echo "Valid version"
+      else
+          echo "Invalid version.  Get closest version"
+          strippedVersion=`git describe --tag --abbrev=0 | sed -e 's/v//'`
+      fi
+    - if [ ! -f appversion.json ]; then $CI_PROJECT_DIR/node_modules/.bin/apv init; fi
+    - $CI_PROJECT_DIR/node_modules/.bin/apv set-version $strippedVersion
+    - >
+      if [[ ! -z $REPO_DIR ]] && [[ $CI_PIPELINE_SOURCE == "web" ]]; then
+        npm run build-deploy-client
+      else
+        npm run build-deploy
+      fi
+  dependencies:
+    - env_prep_server
+    - env_prep_client
+  artifacts:
+    expire_in: 1 hr
+    paths:
+      - build/
+      - client.ver
+      - server.ver
+
+# Deploys the build to the demo project in AWS
+deploy:
+  stage: deploy
+  image: python:3
+  before_script:
+    - uname -a
+    - python --version
+  script:
+    - cd $CI_PROJECT_DIR
+    - echo $DEPLOY
+    - VERSION=`cat server.ver`_`cat client.ver`_`date +%Y-%m-%d_%H-%M`
+    - mkdir -p ~/.aws
+    - echo "[profile legacyfarmer-deploy]" > ~/.aws/config
+    - echo "aws_access_key_id = $AWS_ACCESS_ID" >> ~/.aws/config
+    - echo "aws_secret_access_key = $AWS_SECRET_KEY" >> ~/.aws/config
+    - pip --version
+    - pip install awsebcli
+    - eb --version
+    - cd build
+    - mkdir -p .ebextensions
+    - mkdir -p .elasticbeanstalk
+    - cp -rf ../awsconfigfiles/* .ebextensions
+    - rm .ebextensions/*-config.yml
+    - DEPLOY_EXCLUSIONS=${DEPLOY^^}_EXCLUSIONS
+    - >
+      if [ ! -z ${!DEPLOY_EXCLUSIONS} ]; then
+        echo "rm .ebextensions/${!DEPLOY_EXCLUSIONS}"
+        rm ${!DEPLOY_EXCLUSIONS}
+      fi
+    - cp ../awsconfigfiles/${DEPLOY,,}-config.yml .elasticbeanstalk/config.yml
+    - ls -la .ebextensions
+    - ls -la .elasticbeanstalk
+    - echo $VERSION
+    - eb deploy -l $VERSION
+    - eb status
+  environment:
+    name: $DEPLOY
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: on_success
+    - when: never
+  dependencies:
+    - build
+  after_script:
+    - rm -rf ~/.aws
+    - rm -rf $CI_PROJECT_DIR/build

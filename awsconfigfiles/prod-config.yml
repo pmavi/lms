@@ -1,0 +1,17 @@
+branch-defaults:
+  default:
+    environment: legacyfarmer-prod-env
+environment-defaults:
+  legacyfarmer-prod-env:
+    branch: null
+    repository: null
+global:
+  application_name: legacyfarmer-prod
+  default_region: us-east-2
+  include_git_submodules: true
+  instance_profile: null
+  platform_name: null
+  platform_version: null
+  profile: legacyfarmer-deploy
+  sc: null
+  workspace_type: Application

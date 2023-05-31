@@ -1,0 +1,13 @@
+import deepmerge from 'deepmerge';
+
+/**
+ * This file allows you to overwrite config settings without them showing up in git.
+ * Just add what you want to change/add to the config object below
+ */
+const config = {
+};
+
+// Export the config object
+export default function updateConfig(oldConfig) {
+   return deepmerge(oldConfig, config);
+}

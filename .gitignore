@@ -1,0 +1,39 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# Runtime Data
+pids
+*.pid
+*.seed
+
+# Dependency Directory
+node_modules
+
+#WebStorm Generated Files
+\.idea/
+_Deparsed_XSubs\.pm
+
+#Visual Studio Code Files
+\.vscode/
+
+#Build Files
+build/*
+src/startup/build/*
+!build/package*
+!build/.npmrc
+
+#Configuration Files
+src/config/configCustom.js
+src/config/database-config*.js
+!src/config/database-config-deploy.js
+
+#Coverage
+.nyc_output
+coverage
+mock.db
+mock.db-journal
+
+# Cognito Tools
+cognitoTools
